@@ -32,54 +32,6 @@ public class ATCBORManager {
         var body: Data
     }
     
-    /// Decodes a CBOR string from the event stream.
-    ///
-    /// - Parameter base64String: The CBOR string to be decoded.
-    func decodeCBOR(from base64String: String) {
-        guard let data = Data(base64Encoded: base64String) else {
-            print("Invalid Base64 string")
-            return
-        }
-        
-        do {
-            let items = try decodeItems(from: data)
-//            if let cborBlocks = extractCborBlocks(from: items) {
-//                print("Decoded CBOR:", cborBlocks)
-//            }
-            print("Decoded CBOR: \(items)")
-        } catch {
-            print("Failed to decode CBOR: \(error)")
-        }
-    }
-    
-    /// Decodes individual items from the CBOR string.
-    ///
-    /// A CBOR string contains two documents: the header and the body. This method will ensure
-    /// that both documents are decoded.
-    ///
-    /// - Parameter data: The CBOR string to be decoded.
-    /// - Returns: An array of `CBOR` objects.
-    private func decodeItems(from data: Data) throws -> [CBOR] {
-        guard let decoded = try CBOR.decodeMultipleItems(data.bytes, options: CBOROptions(useStringKeys: false, forbidNonStringMapKeys: true)) else {
-            throw CBORProcessingError.cannotDecode
-        }
-        
-        return decoded
-    }
-    
-//    /// Extracts a CBOR block for the purpose of decoding.
-//    ///
-//    /// - Parameter items: An array of `CBOR` objects.
-//    /// - Returns: An array of `UInt8` objects.
-//    private func extractCborBlocks(from items: [CBOR]) -> [UInt8]? {
-//        guard let payload = items.last,
-//              let cborBlocks = payload["blocks"],
-//              case .byteString(let array) = cborBlocks else {
-//            return nil
-//        }
-//        return array
-//    }
-    
     /// A delegate that runs when a CBOR object is decoded.
     public typealias OnCarDecoded = (CarProgressStatusEvent) -> Void
     
@@ -111,7 +63,36 @@ public class ATCBORManager {
 //            progress?(CarProgressStatusEvent(cid: cid, body: Data(bs)))
 //        }
 //    }
-    
+
+    public func decodeCar(from stream: InputStream, progress: OnCarDecoded? = nil) async throws {
+        var totalBytesRead = 0
+
+        // Header
+        let header = decodeReader(from: stream)
+        totalBytesRead += header.length + header.value
+        var start = header.length + header.value
+
+        // Scan the stream to the appropriate start position
+        _ = try await scan(from: stream, length: start - 1)
+
+        while true {
+            // Decode the body
+            let body = decodeReader(from: stream)
+
+            if body.value == -1 {
+                break
+            }
+
+            totalBytesRead += body.length
+            start += body.length
+
+            // Read the CID
+            var cidBuffer = [UInt8](repeating: 0, count: cidByteLength)
+            _ = try await scan(from: stream, length: cidByteLength)
+            
+        }
+    }
+
     /// Scans a specified number of bytes from data.
     ///
     /// - Parameters:
@@ -126,33 +107,68 @@ public class ATCBORManager {
         }
         return data.subdata(in: 0..<length)
     }
-
-    /// Decodes data received from a `Data` object into a structured format.
+    
+    /// Scans a stream of the encoded data.
     ///
-    /// - Parameter data: The incoming `Data` object.
+    /// - Parameters:
+    ///   - stream: The stream which contains a CAR file.
+    ///   - length: The number of bytes in the stream.
+    /// - Returns: A `Data` object, containg the stream of the file.
+    public func scan(from stream: InputStream, length: Int) async throws -> Data {
+        var receiveBuffer = [UInt8](repeating: 0, count: length)
+        var totalBytesRead = 0
+
+        stream.open()
+        defer {
+            stream.close()
+        }
+
+        while totalBytesRead < length {
+            let bytesRead = stream.read(&receiveBuffer[totalBytesRead], maxLength: length - totalBytesRead)
+            if bytesRead < 0 {
+                throw stream.streamError ?? NSError(domain: NSURLErrorDomain, code: NSURLErrorUnknown, userInfo: nil)
+            } else if bytesRead == 0 {
+                throw NSError(domain: NSURLErrorDomain, code: NSURLErrorZeroByteResource, userInfo: nil)
+            }
+            totalBytesRead += bytesRead
+        }
+
+        return Data(receiveBuffer)
+    }
+
+    /// Decodes data received from a stream object into a structured format.
+    ///
+    /// - Parameter stream: The incoming stream.
     /// - Returns: A ``CBORDecodedBlock``, containing the decoded value and the length of
     /// the processed data.
-    func decodeWebSocketData(_ data: Data) -> CBORDecodedBlock? {
-        var index = 0
-        var result = [UInt8]()
-        
-        while index < data.count {
-            let byte = data[index]
-            result.append(byte)
-            index += 1
+    public func decodeReader(from stream: InputStream) -> CBORDecodedBlock {
+        var bytes = [UInt8]()
+        var buffer = [UInt8](repeating: 0, count: 1)
+
+        while stream.hasBytesAvailable {
+            let bytesRead = stream.read(&buffer, maxLength: 1)
+
+            guard bytesRead > 0 else {
+                // If no bytes were read, return an invalid DecodedBlock.
+                return CBORDecodedBlock(value: -1, length: -1)
+            }
+
+            let byte = buffer[0]
+            bytes.append(byte)
+
             if (byte & 0x80) == 0 {
                 break
             }
         }
-        
-        if result.isEmpty {
-            // TODO: Add error handling.
-            return nil
+
+        // If the stream ends unexpectedly, return an invalid DecodedBlock.
+        guard !bytes.isEmpty else {
+            return CBORDecodedBlock(value: -1, length: -1)
         }
 
-        return CBORDecodedBlock(value: decode(result), length: result.count)
+        return CBORDecodedBlock(value: decode(bytes), length: bytes.count)
     }
-    
+
     /// Decodes a byte array to extract the length and the encoded data.
     ///
     /// - Parameter bytes: The bytes to decode.

@@ -70,15 +70,15 @@ extension ATEventStreamConfiguration {
             do {
                 let message = try await webSocketTask.receive()
                 
-                switch message {
-                    case .string(let base64String):
-                        ATCBORManager().decodeCBOR(from: base64String)
-                    case .data(let data):
-                        let base64String = data.base64EncodedString()
-                        ATCBORManager().decodeCBOR(from: base64String)
-                    @unknown default:
-                        print("Received an unknown type of message.")
-                }
+//                switch message {
+//                    case .string(let base64String):
+//                        ATCBORManager().decodeCBOR(from: base64String)
+//                    case .data(let data):
+//                        let base64String = data.base64EncodedString()
+//                        ATCBORManager().decodeCBOR(from: base64String)
+//                    @unknown default:
+//                        print("Received an unknown type of message.")
+//                }
             } catch {
                 print("Error receiving message: \(error)")
             }
